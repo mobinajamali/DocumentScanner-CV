@@ -5,9 +5,17 @@ import cv2 as cv
 cap = cv.VideoCapture(0)
 
 # 1. SET CAPTURE PARAMETERS
-FRAME_WIDTH = 480
+FRAME_WIDTH = 480  
 FRAME_HEIGHT = 640
-cap.set(10, 150)
+cap.set(10, 0)
+
+
+# Define the codec and create VideoWriter object
+out = cv.VideoWriter('output.avi',
+                     cv.VideoWriter_fourcc(*'XVID'), 
+                     20.0, 
+                     (1152, 768)) # final stacked image size
+
 
 # 2. PREPROCESS FUNCTION
 def preProcessing(img):
@@ -24,15 +32,17 @@ def preProcessing(img):
     # FINAL IMG
     imgThresh = cv.erode(dial, kernel, iterations=1)
 
-    return imgThresh
+    return imgThresh, gray
     
 
 # 3. CONTOUR DETECTION (THE BIGGEST ONE AVAILABLE)
 def getContours(img):
 
-    biggest = []
+    biggest = np.array([])
     maxArea = 0
-    contours, hierachy = cv.findContours(img, cv.RETR_EXTERNAL, cv. CHAIN_APPROX_NONE)
+    contours, hierachy = cv.findContours(img, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_NONE)
+    contour_display = cv.drawContours(result, contours, -1, (0, 255, 0), 10)
+    #print("Number of contours:", len(contours))
     for cnt in contours:
         # FIND THE AREA OF THE CONTOUR
         area = cv.contourArea(cnt)
@@ -48,8 +58,8 @@ def getContours(img):
                 maxArea = area
     
     # DRAW IT OUT
-    cv.drawContours(imgContour, biggest, -1, (255, 0, 0), 15)
-    return biggest
+    cv.drawContours(imgContour, biggest, -1, (0, 255, 0), 20)
+    return biggest, contour_display
 
 
 # NOTE: the ordering of the points has to be like [[0,0], [widthImg, 0], [0, heightImg], [widthImg, heightImg]]
@@ -83,27 +93,104 @@ def getWarp(img, biggest):
     pts1 = np.float32(biggest)
     pts2 = np.float32([[0,0], [FRAME_WIDTH, 0], [0, FRAME_HEIGHT], [FRAME_WIDTH, FRAME_HEIGHT]])
     matrix = cv.getPerspectiveTransform(pts1, pts2)
-    imgOutput = cv.warpPerspective(img, matrix, FRAME_WIDTH, FRAME_HEIGHT)
+    imgOutput = cv.warpPerspective(img, matrix, (FRAME_WIDTH, FRAME_HEIGHT))
     
-    # 6. after warping the image reduce the resolution
-    
+    # 6. after warping the image reduce some pixels (remove 20 pixels from each side)
+    imgCropped = imgOutput[10:imgOutput.shape[0]-10, 10:imgOutput.shape[1]-10]
+    # RESIZE THE IMG TO THE PREVIOUS SIZE
+    imgCropped = cv.resize(imgCropped, (FRAME_WIDTH, FRAME_HEIGHT))
 
-    return imgOutput
+    return imgCropped
+
+
+# 7. STACKING IMAGE RESULTS
+def stackImages(scale, imgArray, names):
+    rows = len(imgArray)
+    cols = len(imgArray[0])
+    rowsAvailable = isinstance(imgArray[0], list)
+    width = imgArray[0][0].shape[1]
+    height = imgArray[0][0].shape[0]
+
+    if rowsAvailable:
+        for x in range(0, rows):
+            for y in range(0, cols):
+                if imgArray[x][y].shape[:2] == imgArray[0][0].shape[:2]:
+                    imgArray[x][y] = cv.resize(imgArray[x][y], (0, 0), None, scale, scale)
+                else:
+                    imgArray[x][y] = cv.resize(imgArray[x][y], (imgArray[0][0].shape[1], imgArray[0][0].shape[0]),
+                                               None, scale, scale)
+                if len(imgArray[x][y].shape) == 2:
+                    imgArray[x][y] = cv.cvtColor(imgArray[x][y], cv.COLOR_GRAY2BGR)
+
+        imageBlank = np.zeros((height, width, 3), np.uint8)
+        hor = [imageBlank] * rows
+        hor_con = [imageBlank] * rows
+        for x in range(0, rows):
+            for y in range(0, cols):
+                if y < len(names[x]):  # Check if the name exists for this column
+                    cv.putText(imgArray[x][y], names[x][y], (10, 20), cv.FONT_HERSHEY_COMPLEX_SMALL, 0.8, (0, 0, 255), 2)
+            hor[x] = np.hstack(imgArray[x])
+        ver = np.vstack(hor)
+    else:
+        for x in range(0, rows):
+            if imgArray[x].shape[:2] == imgArray[0].shape[:2]:
+                imgArray[x] = cv.resize(imgArray[x], (0, 0), None, scale, scale)
+            else:
+                imgArray[x] = cv.resize(imgArray[x], (imgArray[0].shape[1], imgArray[0].shape[0]), None, scale, scale)
+            if len(imgArray[x].shape) == 2:
+                imgArray[x] = cv.cvtColor(imgArray[x], cv.COLOR_GRAY2BGR)
+        hor = np.hstack(imgArray)
+        ver = hor
+    return ver
 
 
 # 1. DISPLAY THE FRAME
+frames = []
+img_count = 0
 while True:
     success, frame = cap.read()
+
     # RESIZE THE IMG
     frame = cv.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
     # 3.
+    result = frame.copy()
     imgContour = frame.copy()
+    blank = np.zeros(frame.shape[:2], dtype='uint8')
     # 2, 3, 4.
-    imgThresh = preProcessing(frame)
-    biggest = getContours(imgThresh)
-    print(biggest)
-    warp = getWarp(frame, biggest)
+    imgThresh, gray = preProcessing(frame)
+    biggest, result = getContours(imgThresh)
 
-    cv.imshow('Result', warp)
+    # 7. TO STACK UP THE RESULTS
+    if biggest.size != 0:
+        warp = getWarp(frame,biggest)
+        # create adaptive threshold of the result img
+        warp_gray = cv.cvtColor(warp, cv.COLOR_BGR2GRAY)
+        adaptive_thresh = cv.adaptiveThreshold(warp_gray, 
+                                           255, 
+                                           cv.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                           cv.THRESH_BINARY, 
+                                           11, 
+                                           2)
+        #warp2 = getWarp(frame,adaptive_thresh)
+        imageArray = ([frame, gray, imgThresh, result],
+                    [imgContour, warp, warp_gray, adaptive_thresh])
+        #cv.imshow('Image Warped', warp)
+    else:
+        imageArray = ([frame, gray, imgThresh, result],
+                    [imgContour, blank, blank, blank])
+    
+    names = [["Original", "Gray", "Threshold", "Contours"], ["Biggest Contour", "Warp", "Warp Gray", "Adaptive Thresh"]]
+    stackedImages = stackImages(0.6, imageArray, names)
+
+    # Write the frame to the output video
+    out.write(stackedImages)
+    cv.imshow('Result', stackedImages)
+    print("Dimensions of stackedImages:", stackedImages.shape)
+
+
     if cv.waitKey(1) & 0xFF==ord('q'):
         break
+
+cap.release()
+out.release()
+cv.destroyAllWindows()
