@@ -11,7 +11,7 @@ cap.set(10, 0)
 
 
 # Define the codec and create VideoWriter object
-out = cv.VideoWriter('output.avi',
+out = cv.VideoWriter('output2.avi',
                      cv.VideoWriter_fourcc(*'XVID'), 
                      20.0, 
                      (1152, 768)) # final stacked image size
